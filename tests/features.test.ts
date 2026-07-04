@@ -1,15 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { segment, extractFeatures, type ImageDataLike } from '../src/vision/features';
+import { mulberry32 } from '../src/game/prng';
 
 const SIZE = 160;
 const BG: [number, number, number] = [200, 190, 170]; // 明るいテーブル色
 
-function blankImage(): ImageDataLike {
+function blankImage(color: [number, number, number] = BG): ImageDataLike {
   const data = new Uint8ClampedArray(SIZE * SIZE * 4);
   for (let i = 0; i < SIZE * SIZE; i++) {
-    data[i * 4] = BG[0];
-    data[i * 4 + 1] = BG[1];
-    data[i * 4 + 2] = BG[2];
+    data[i * 4] = color[0];
+    data[i * 4 + 1] = color[1];
+    data[i * 4 + 2] = color[2];
     data[i * 4 + 3] = 255;
   }
   return { data, width: SIZE, height: SIZE };
@@ -56,6 +57,43 @@ describe('segment', () => {
   it('何も置いていなければ面積ほぼゼロ', () => {
     const seg = segment(blankImage());
     expect(seg.areaRatio).toBeLessThan(0.02);
+  });
+
+  it('白い皿×白いシャリ×暗い海苔（実戦の難パターン）を検出できる', () => {
+    // 暗いテーブルの上に白い皿、皿の上に海苔＋粒感のあるシャリ
+    const img = blankImage([90, 60, 40]);
+    paint(img, disk(76), [235, 232, 225]); // 白い皿（外周リングに皿とテーブルが混在する）
+    paint(img, (x, y) => x >= 55 && x <= 110 && y >= 55 && y <= 110, [30, 34, 26]); // 海苔
+    // シャリ: 皿とほぼ同じ白だが、米粒の影でテクスチャがある
+    const rnd = mulberry32(7);
+    const rice = (x: number, y: number) => (x - 80) ** 2 + (y - 108) ** 2 <= 26 * 26;
+    for (let y = 0; y < SIZE; y++) {
+      for (let x = 0; x < SIZE; x++) {
+        if (!rice(x, y)) continue;
+        const v = rnd() < 0.25 ? 175 : 236;
+        const i = y * SIZE + x;
+        img.data[i * 4] = v;
+        img.data[i * 4 + 1] = v;
+        img.data[i * 4 + 2] = v - 6;
+      }
+    }
+    const seg = segment(img);
+    const at = (x: number, y: number) => seg.mask[y * SIZE + x];
+    // 海苔の中心は前景
+    expect(at(80, 70)).toBe(1);
+    // シャリ領域の大半が前景（テクスチャ救済）
+    let riceHit = 0, riceTotal = 0;
+    for (let y = 0; y < SIZE; y++) {
+      for (let x = 0; x < SIZE; x++) {
+        if (!rice(x, y)) continue;
+        riceTotal++;
+        riceHit += at(x, y);
+      }
+    }
+    expect(riceHit / riceTotal).toBeGreaterThan(0.6);
+    // なめらかな皿の部分（手巻きから離れた場所）は背景のまま
+    expect(at(80, 20)).toBe(0);
+    expect(at(20, 80)).toBe(0);
   });
 });
 

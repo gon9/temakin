@@ -92,59 +92,145 @@ function components(mask: Uint8Array, w: number, h: number, value: number): numb
   return result;
 }
 
+/** 外周リングのk-meansクラスタ数（皿＋テーブル＋影などの複数背景に対応） */
+const BG_CLUSTERS = 3;
+/** リング画素のこれ未満しか占めないクラスタは背景とみなさない（隅のノイズ対策）。
+ *  皿の縁がわずかにしか枠に入らないケースも背景として拾えるよう低めにしてある */
+const BG_MIN_SHARE = 0.04;
+/** 背景クラスタからのL1色距離がこれを超えたら前景 */
+const COLOR_DIST_THRESHOLD = 60;
+/** シャリ救済: 局所コントラストがこれを超える白っぽい画素は前景（米粒のテクスチャ） */
+const RICE_STD_THRESHOLD = 0.045;
+
+/** リング画素をRGBでk-meansし、背景色クラスタ（中心色の配列）を返す。決定的。 */
+function ringClusters(data: Uint8ClampedArray, ringIdx: number[]): number[][] {
+  const pixels = ringIdx.map((i) => [data[i * 4], data[i * 4 + 1], data[i * 4 + 2]]);
+  // 決定的な初期化: 最暗・中央・最明。少数派でも極端に明るい/暗い背景
+  // （例: 枠の縁にわずかに入った白い皿）が独立クラスタになるようにする
+  const sorted = [...pixels].sort((a, b) => a[0] + a[1] + a[2] - (b[0] + b[1] + b[2]));
+  let centers = Array.from({ length: BG_CLUSTERS }, (_, k) => [
+    ...sorted[Math.min(sorted.length - 1, Math.floor((k * (sorted.length - 1)) / (BG_CLUSTERS - 1)))],
+  ]);
+  const assign = new Uint8Array(pixels.length);
+  for (let iter = 0; iter < 8; iter++) {
+    for (let p = 0; p < pixels.length; p++) {
+      let best = 0;
+      let bestD = Infinity;
+      for (let k = 0; k < centers.length; k++) {
+        const d =
+          Math.abs(pixels[p][0] - centers[k][0]) +
+          Math.abs(pixels[p][1] - centers[k][1]) +
+          Math.abs(pixels[p][2] - centers[k][2]);
+        if (d < bestD) { bestD = d; best = k; }
+      }
+      assign[p] = best;
+    }
+    centers = centers.map((c, k) => {
+      let r = 0, g = 0, b = 0, cnt = 0;
+      for (let p = 0; p < pixels.length; p++) {
+        if (assign[p] !== k) continue;
+        r += pixels[p][0]; g += pixels[p][1]; b += pixels[p][2]; cnt++;
+      }
+      return cnt > 0 ? [r / cnt, g / cnt, b / cnt] : c;
+    });
+  }
+  const shares = centers.map((_, k) => {
+    let cnt = 0;
+    for (let p = 0; p < pixels.length; p++) if (assign[p] === k) cnt++;
+    return cnt / pixels.length;
+  });
+  return centers.filter((_, k) => shares[k] >= BG_MIN_SHARE);
+}
+
 /**
- * ガイド枠内画像から手巻き領域を抽出する。
- * 枠の外周を背景色サンプルとして、色距離で前景を分離する古典的手法（DD 4.1）。
+ * ガイド枠内画像から手巻き領域を抽出する（DD 4.1）。
+ * 1) 外周リングを複数クラスタで背景モデル化（白い皿＋暗いテーブル等の混在に対応）
+ * 2) 背景色から遠い画素を前景に
+ * 3) 白い皿の上の白いシャリは色では区別できないため、米粒のテクスチャ
+ *    （局所コントラスト）で救済する
+ * 4) 中央付近にかかる連結成分を採用（ガイドの中心に手巻きを置いてもらう前提）
  */
 export function segment(img: ImageDataLike): Segmentation {
   const { width: w, height: h, data } = img;
   const n = w * h;
 
-  // 外周リングから背景色の平均と平均偏差を推定
   const ring = Math.max(2, Math.round(Math.min(w, h) * 0.04));
-  let mr = 0, mg = 0, mb = 0, count = 0;
   const ringIdx: number[] = [];
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       if (x >= ring && x < w - ring && y >= ring && y < h - ring) continue;
-      const i = y * w + x;
-      ringIdx.push(i);
-      mr += data[i * 4];
-      mg += data[i * 4 + 1];
-      mb += data[i * 4 + 2];
-      count++;
+      ringIdx.push(y * w + x);
     }
   }
-  mr /= count; mg /= count; mb /= count;
-  let dev = 0;
-  for (const i of ringIdx) {
-    dev +=
-      Math.abs(data[i * 4] - mr) +
-      Math.abs(data[i * 4 + 1] - mg) +
-      Math.abs(data[i * 4 + 2] - mb);
-  }
-  dev /= count;
-  const threshold = Math.max(60, dev * 4);
+  const bg = ringClusters(data, ringIdx);
 
-  // 背景色からのL1距離で前景判定
-  let mask = new Uint8Array(n);
+  // 輝度・彩度・明度と3x3局所標準偏差（シャリ判定用）
+  const lum = new Float32Array(n);
+  const sat = new Float32Array(n);
+  const val = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    const dist =
-      Math.abs(data[i * 4] - mr) +
-      Math.abs(data[i * 4 + 1] - mg) +
-      Math.abs(data[i * 4 + 2] - mb);
-    if (dist > threshold) mask[i] = 1;
+    const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    lum[i] = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+    val[i] = max / 255;
+    sat[i] = max === 0 ? 0 : (max - min) / max;
   }
 
-  // オープニング（収縮→膨張）でノイズ除去
-  mask = dilate(erode(mask, w, h), w, h);
+  let mask = new Uint8Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      // 背景クラスタのどれからも遠ければ前景
+      let minD = Infinity;
+      for (const c of bg) {
+        const d =
+          Math.abs(data[i * 4] - c[0]) +
+          Math.abs(data[i * 4 + 1] - c[1]) +
+          Math.abs(data[i * 4 + 2] - c[2]);
+        if (d < minD) minD = d;
+      }
+      if (minD > COLOR_DIST_THRESHOLD) {
+        mask[i] = 1;
+        continue;
+      }
+      // シャリ救済: 白っぽく、かつ米粒のテクスチャがある
+      if (sat[i] < 0.35 && val[i] > 0.45 && x > 0 && x < w - 1 && y > 0 && y < h - 1) {
+        let s1 = 0, s2 = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const v = lum[i + dy * w + dx];
+            s1 += v; s2 += v * v;
+          }
+        }
+        const m = s1 / 9;
+        if (Math.sqrt(Math.max(0, s2 / 9 - m * m)) > RICE_STD_THRESHOLD) mask[i] = 1;
+      }
+    }
+  }
 
-  // 最大連結成分だけ残す
+  // オープニング（収縮→膨張）でノイズ除去、さらに膨張1回で米粒同士をつなぐ
+  mask = dilate(dilate(erode(mask, w, h), w, h), w, h);
+
+  // 中央付近にかかる成分を採用（面積 × 中央率で選ぶ）
   const comps = components(mask, w, h, 1);
   mask = new Uint8Array(n);
   if (comps.length > 0) {
-    comps.sort((a, b) => b.length - a.length);
-    for (const i of comps[0]) mask[i] = 1;
+    const cx0 = w * 0.3, cx1 = w * 0.7, cy0 = h * 0.3, cy1 = h * 0.7;
+    let best: number[] | null = null;
+    let bestScore = -1;
+    for (const comp of comps) {
+      if (comp.length < n * 0.005) continue;
+      let centerCnt = 0;
+      for (const i of comp) {
+        const x = i % w;
+        const y = (i / w) | 0;
+        if (x >= cx0 && x <= cx1 && y >= cy0 && y <= cy1) centerCnt++;
+      }
+      const score = comp.length * (0.2 + (centerCnt / comp.length) * 0.8);
+      if (score > bestScore) { bestScore = score; best = comp; }
+    }
+    if (best) for (const i of best) mask[i] = 1;
 
     // 穴埋め: 外周に接しない背景成分は手巻き内部の穴とみなす
     const bgComps = components(mask, w, h, 0);
