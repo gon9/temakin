@@ -118,6 +118,15 @@ body {
 }
 .name-input:focus { outline: none; border-color: var(--accent); }
 
+/* 人数選択 */
+.count-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  width: 100%;
+}
+.count-btn { padding: 20px 0; font-size: 1.15rem; }
+
 /* 対戦カード */
 .match-label { color: var(--gold); font-weight: bold; letter-spacing: 0.2em; }
 .vs-board {

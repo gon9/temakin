@@ -29,7 +29,7 @@ export function showChampion(): void {
       <ul class="standings">${rows}</ul>
       <div class="col">
         <button class="btn primary big" data-act="again">同じメンバーでもう一回</button>
-        <button class="btn ghost" data-act="members">メンバーを変える</button>
+        <button class="btn ghost" data-act="members">人数を変える</button>
         <button class="btn ghost" data-act="reset">さいしょから</button>
       </div>
     </div>

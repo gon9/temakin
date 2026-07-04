@@ -1,6 +1,7 @@
 import { screen, $, esc, toast } from '../dom';
 import { store, playerById } from '../store';
 import { captureFromCamera } from '../../vision/camera';
+import { cropFaceCircle } from '../../vision/faceCard';
 import { analyzeTemakiCanvas, type AnalysisResult } from '../../vision/analyze';
 import { generateSampleTemaki } from '../../vision/synthetic';
 import { createFighter } from '../../game/fighterFactory';
@@ -34,6 +35,7 @@ function scanPlayer(playerId: string, onDone: () => void): void {
       <div class="scan-actions">
         <button class="btn primary big" data-act="camera">📷 手巻きをスキャン</button>
         <button class="btn ghost" data-act="sample">🎲 サンプル手巻きで試す（カメラ不要）</button>
+        <button class="btn ghost" data-act="face">🤳 顔ネタをつける（任意）</button>
       </div>
     </div>
   `);
@@ -72,6 +74,19 @@ function scanPlayer(playerId: string, onDone: () => void): void {
 
   $(root, '[data-act="sample"]').onclick = () => {
     analyze(generateSampleTemaki());
+  };
+
+  $(root, '[data-act="face"]').onclick = async () => {
+    const shot = await captureFromCamera({
+      facing: 'user',
+      guide: 'circle',
+      title: `${player.name}の顔ネタを撮影`,
+      note: '丸の中に顔を収めてね',
+    });
+    if (shot) {
+      player.face = cropFaceCircle(shot);
+      toast(`${player.name}の顔ネタをつけた！ファイターに合成されるよ`);
+    }
   };
 
   $(root, '[data-act="retake"]').onclick = () => {
