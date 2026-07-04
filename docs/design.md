@@ -27,7 +27,7 @@
 | レイヤ | 技術 | 選定理由 |
 |---|---|---|
 | 言語/ビルド | TypeScript + Vite | 標準的。PWAプラグインでオフライン化が容易 |
-| UIフレームワーク | Svelte（または軽量なReact） | バンドルを小さく保ち初回ロードを速くする |
+| UIフレームワーク | なし（Vanilla TS + 小さなDOMヘルパ） | 依存ゼロでバンドル最小。画面数が少なくフレームワーク不要と判断 |
 | 描画 | Canvas 2D（バトル演出） | WebGL必須の表現は不要。2Dで十分派手にできる |
 | カメラ | `getUserMedia` + `<video>` → Canvasキャプチャ | 標準API。外カメ/インカメは `facingMode` で切替 |
 | 顔切り抜き | MediaPipe Tasks Vision(Selfie Segmentation + Face Detector) | WASM製・端末内で完結。実績が多い |
