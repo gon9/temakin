@@ -42,13 +42,29 @@ export function captureFromCamera(opts: CaptureOptions): Promise<HTMLCanvasEleme
 
     const video = overlay.querySelector('video')!;
     const preview = overlay.querySelector<HTMLCanvasElement>('.camera-preview')!;
+    const stage = overlay.querySelector<HTMLElement>('.camera-stage')!;
+    const guide = overlay.querySelector<HTMLElement>('.camera-guide')!;
     const errorEl = overlay.querySelector<HTMLElement>('.camera-error')!;
     const btn = (act: string) => overlay.querySelector<HTMLButtonElement>(`[data-act="${act}"]`)!;
 
     let stream: MediaStream | null = null;
     let shot: HTMLCanvasElement | null = null;
 
+    // 映像はcontain表示（全体が見える）なので、ガイド枠を「実際に撮影される
+    // 中央の正方形」と一致するサイズに合わせる
+    const updateGuide = () => {
+      if (!video.videoWidth) return;
+      const rect = stage.getBoundingClientRect();
+      const scale = Math.min(rect.width / video.videoWidth, rect.height / video.videoHeight);
+      const side = Math.min(video.videoWidth, video.videoHeight) * scale * GUIDE_RATIO;
+      guide.style.width = `${side}px`;
+      guide.style.height = `${side}px`;
+    };
+    video.addEventListener('loadedmetadata', updateGuide);
+    window.addEventListener('resize', updateGuide);
+
     const cleanup = (result: HTMLCanvasElement | null) => {
+      window.removeEventListener('resize', updateGuide);
       stream?.getTracks().forEach((t) => t.stop());
       overlay.remove();
       resolve(result);
@@ -98,12 +114,25 @@ export function captureFromCamera(opts: CaptureOptions): Promise<HTMLCanvasEleme
 
     navigator.mediaDevices
       .getUserMedia({
-        video: { facingMode: { ideal: opts.facing }, width: { ideal: 1280 } },
+        video: {
+          facingMode: { ideal: opts.facing },
+          // 4:3はカメラの視野が広く、縦画面のcontain表示でも大きく映る
+          width: { ideal: 1280 },
+          height: { ideal: 960 },
+        },
         audio: false,
       })
       .then((s) => {
         stream = s;
         video.srcObject = s;
+        // 端末によってはズームが1倍以外で始まることがあるので最小に戻す
+        const track = s.getVideoTracks()[0];
+        const caps = track.getCapabilities?.() as { zoom?: { min?: number } } | undefined;
+        if (caps?.zoom) {
+          track
+            .applyConstraints({ advanced: [{ zoom: caps.zoom.min ?? 1 } as MediaTrackConstraintSet] })
+            .catch(() => {});
+        }
       })
       .catch((err: unknown) => {
         const e = err as DOMException;

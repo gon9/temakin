@@ -247,7 +247,9 @@ body {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* coverだと縦画面で映像が大きく拡大されて「ズームしすぎ」に見える上、
+     撮影範囲とガイドがずれるので、全体が見えるcontainにする */
+  object-fit: contain;
 }
 .camera-stage video.mirror { transform: scaleX(-1); }
 .camera-guide {
@@ -255,7 +257,8 @@ body {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: min(80vw, 80cqh, 420px);
+  /* 実サイズはJSが映像の表示領域に合わせて設定する（これはフォールバック） */
+  width: min(70vw, 320px);
   aspect-ratio: 1;
   border: 3px dashed rgba(245, 239, 230, 0.85);
   pointer-events: none;
